@@ -218,32 +218,38 @@ jobs:
           fi
           sudo xcode-select -s "$app/Contents/Developer"
           xcodebuild -version
-      - name: Stage verified ONNX archives
+      - name: Seed verified ONNX archives into SwiftPM cache
         shell: bash
         run: |
           set -euo pipefail
-          output="$RUNNER_TEMP/tincall-selfsign"
-          derived="$output/DerivedData"
-          mkdir -p "$output"
+          mirror="https://github.com/TypeWhisper/onnxruntime-swift-package-manager/releases/download/1.24.2"
+          cache="$HOME/Library/Caches/org.swift.swiftpm/artifacts"
+          mkdir -p "$cache"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
 
-          # Let SwiftPM clone the pinned package first. Its binary download may fail
-          # here because download.onnxruntime.ai currently presents a bad TLS chain.
-          xcodebuild -project ios/Tincall.xcodeproj -scheme Tincall             -resolvePackageDependencies -derivedDataPath "$derived" >/tmp/onnx-resolve.log 2>&1 || true
+          seed() {
+            original_url="$1"
+            mirror_url="$2"
+            checksum="$3"
+            name="${original_url##*/}"
+            target="$cache/$(printf '%s' "$original_url" | LC_ALL=C sed 's/[^A-Za-z0-9]/_/g')"
 
-          checkout="$derived/SourcePackages/checkouts/onnxruntime-swift-package-manager"
-          test -f "$checkout/Package.swift"
+            curl -fsSL --retry 4 --retry-all-errors --connect-timeout 20 --max-time 300 \
+              "$mirror_url" -o "$work/$name"
+            echo "$checksum  $work/$name" | shasum -a 256 -c -
+            mv "$work/$name" "$target"
+          }
 
-          runtime="pod-archive-onnxruntime-c-1.24.2.zip"
-          extensions="pod-archive-onnxruntime-extensions-c-0.13.0.zip"
+          seed \
+            "https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.24.2.zip" \
+            "$mirror/pod-archive-onnxruntime-c-1.24.2.zip" \
+            "f7100a992d2a8135168c8afd831e6a58b465349101982aa58b3e11d36e600b54"
 
-          curl --fail --location --retry 4 --retry-all-errors             "https://onnxruntimepackages.z14.web.core.windows.net/$runtime" -o "$checkout/$runtime"
-          curl --fail --location --retry 4 --retry-all-errors             "https://onnxruntimepackages.z14.web.core.windows.net/$extensions" -o "$checkout/$extensions"
-
-          echo "f7100a992d2a8135168c8afd831e6a58b465349101982aa58b3e11d36e600b54  $checkout/$runtime" | shasum -a 256 -c -
-          echo "346522d1171d4c99cb0908fa8e4e9330a4a6aad39cd83ce36eb654437b33e6b5  $checkout/$extensions" | shasum -a 256 -c -
-
-          echo "ORT_POD_LOCAL_PATH=$runtime" >> "$GITHUB_ENV"
-          echo "ORT_EXTENSIONS_POD_LOCAL_PATH=$extensions" >> "$GITHUB_ENV"
+          seed \
+            "https://download.onnxruntime.ai/pod-archive-onnxruntime-extensions-c-0.13.0.zip" \
+            "$mirror/pod-archive-onnxruntime-extensions-c-0.13.0.zip" \
+            "346522d1171d4c99cb0908fa8e4e9330a4a6aad39cd83ce36eb654437b33e6b5"
       - name: Package unsigned IPA
         shell: bash
         run: |
