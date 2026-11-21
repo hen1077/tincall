@@ -3,6 +3,96 @@
 
 import Foundation
 
+struct StandaloneBilingualReplyStreamFilter {
+    private enum Phase { case spoken, translation, done }
+    private static let opening = "<translation>"
+    private static let closing = "</translation>"
+
+    private var phase: Phase = .spoken
+    private var pending = ""
+    private(set) var spoken = ""
+    private(set) var translation = ""
+    private var closed = false
+
+    /// Streams only the spoken portion. Translation text is held for display
+    /// and control tags never reach speech synthesis, even when split across deltas.
+    mutating func append(_ delta: String, final: Bool = false) -> String {
+        pending += delta
+        var output = ""
+        while true {
+            switch phase {
+            case .spoken:
+                if let range = pending.range(of: Self.opening) {
+                    let part = String(pending[..<range.lowerBound])
+                    output += part
+                    spoken += part
+                    pending = String(pending[range.upperBound...])
+                    phase = .translation
+                    continue
+                }
+                if final {
+                    output += pending
+                    spoken += pending
+                    pending = ""
+                    return output
+                }
+                let keep = Self.trailingPrefixLength(in: pending, token: Self.opening)
+                let emitCount = pending.count - keep
+                guard emitCount > 0 else { return output }
+                let index = pending.index(pending.startIndex, offsetBy: emitCount)
+                let part = String(pending[..<index])
+                output += part
+                spoken += part
+                pending = String(pending[index...])
+                return output
+
+            case .translation:
+                if let range = pending.range(of: Self.closing) {
+                    translation += String(pending[..<range.lowerBound])
+                    pending = String(pending[range.upperBound...])
+                    phase = .done
+                    closed = true
+                    continue
+                }
+                if final {
+                    // Never leak a malformed translation fragment into speech.
+                    pending = ""
+                    return output
+                }
+                let keep = Self.trailingPrefixLength(in: pending, token: Self.closing)
+                let consumeCount = pending.count - keep
+                guard consumeCount > 0 else { return output }
+                let index = pending.index(pending.startIndex, offsetBy: consumeCount)
+                translation += String(pending[..<index])
+                pending = String(pending[index...])
+                return output
+
+            case .done:
+                if !pending.allSatisfy(\.isWhitespace) { translation += pending }
+                pending = ""
+                return output
+            }
+        }
+    }
+
+    var completed: (spoken: String, display: String)? {
+        guard closed else { return nil }
+        let spoken = spoken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let translation = translation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !spoken.isEmpty, !translation.isEmpty else { return nil }
+        return (spoken, spoken + "\n" + translation)
+    }
+
+    private static func trailingPrefixLength(in text: String, token: String) -> Int {
+        let limit = min(text.count, token.count - 1)
+        guard limit > 0 else { return 0 }
+        for count in stride(from: limit, through: 1, by: -1) {
+            if text.suffix(count) == token.prefix(count) { return count }
+        }
+        return 0
+    }
+}
+
 extension CallCoordinator {
     var isAwaitingMCPReply: Bool {
         guard record?.callMode == .mcp, generation == .generating, playback != .playing,
@@ -254,16 +344,30 @@ extension CallCoordinator {
             do {
                 var timestampFilter = CallTimestampStreamFilter()
                 var endFilter = CallEndStreamFilter()
+                var bilingualFilter = StandaloneBilingualReplyStreamFilter()
                 let timeAware = role.timeAwarenessEnabled == true
                 _ = try await model.stream(connection: connection, messages: context.messages, logContext: RequestLogStore.shared.context(for: turn),
                                            omittedTurnCount: context.omittedTurnCount) { delta in
                     let cleaned = endFilter.append(delta)
                     let text = timeAware ? timestampFilter.append(cleaned) : cleaned
-                    if !text.isEmpty { self?.receiveDelta(text, turn: turn) }
+                    let spoken = bilingualFilter.append(text)
+                    if !spoken.isEmpty { self?.receiveDelta(spoken, turn: turn) }
                 }
                 let endTail = endFilter.append("", final: true)
                 let tail = timeAware ? timestampFilter.append(endTail, final: true) : endTail
-                if !tail.isEmpty { self?.receiveDelta(tail, turn: turn) }
+                let spokenTail = bilingualFilter.append(tail, final: true)
+                if !spokenTail.isEmpty { self?.receiveDelta(spokenTail, turn: turn) }
+                if let bilingual = bilingualFilter.completed, self?.turns[session.callID] == turn {
+                    self?.mutate(session.callID) { value in
+                        if let index = value.messages.firstIndex(where: { $0.id == turn.messageID }) {
+                            value.messages[index].text = bilingual.display
+                        }
+                    }
+                    self?.externalSpokenTexts[turn.messageID] = bilingual.spoken
+                    if self?.session == turn.session, self?.phase == .active {
+                        self?.currentPlaybackCaption = bilingual.display
+                    }
+                }
                 if endFilter.requestsEnd, self?.turns[session.callID] == turn {
                     self?.modelEndTurn = turn
                 }
