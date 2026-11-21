@@ -7,7 +7,7 @@ private struct ExternalBilingualReply {
     let spoken: String
     let display: String
 
-    /// Opt-in wire format for custom clients:
+    /// Opt-in wire format for bilingual external replies:
     /// <spoken text><translation>display-only translation</translation>
     /// Untagged replies remain completely unchanged.
     static func parse(_ text: String) -> Self? {
