@@ -219,7 +219,16 @@ jobs:
           sudo xcode-select -s "$app/Contents/Developer"
           xcodebuild -version
       - name: Package unsigned IPA
-        run: bash tools/package-self-sign.sh "$RUNNER_TEMP/tincall-selfsign"
+        shell: bash
+        run: |
+          if bash tools/package-self-sign.sh "$RUNNER_TEMP/tincall-selfsign"; then
+            exit 0
+          fi
+          echo "=== package errors ==="
+          awk '/error:/ && !seen[$0]++ { if (count++ < 80) print }' "$RUNNER_TEMP/tincall-selfsign/build.log" || true
+          echo "=== package log tail ==="
+          tail -40 "$RUNNER_TEMP/tincall-selfsign/build.log" || true
+          exit 1
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
