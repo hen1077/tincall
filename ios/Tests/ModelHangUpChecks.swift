@@ -99,6 +99,26 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
         precondition(call.record?.messages.last?.status == .completed && call.record?.messages.last?.interruption == nil)
         print("PASS: streamed command stays out of text/speech; goodbye drains before normal hangup")
 
+        EndingModelProtocol.fixture.lock.withLock {
+            EndingModelProtocol.fixture.text = "ねえ、まだ起きてる？<translation>呐，还没睡吗？</translation>"
+            EndingModelProtocol.fixture.fails = false
+        }
+        let (bilingual, bilingualVoice) = await make()
+        try await until { bilingualVoice.finished || bilingual.generation == .failed }
+        precondition(bilingual.generation == .completed)
+        precondition(bilingualVoice.text == "ねえ、まだ起きてる？",
+                     "translation leaked into speech: \(bilingualVoice.text)")
+        precondition(bilingual.record?.messages.last?.text == "ねえ、まだ起きてる？\n呐，还没睡吗？")
+        bilingualVoice.onEvent?(.playbackCaption(bilingualVoice.turn!, "ねえ、まだ起きてる？"))
+        precondition(bilingual.currentPlaybackCaption == "ねえ、まだ起きてる？\n呐，还没睡吗？")
+        bilingual.hangUp()
+        print("PASS: standalone Japanese reply speaks only Japanese and displays Chinese translation")
+
+        EndingModelProtocol.fixture.lock.withLock {
+            EndingModelProtocol.fixture.text = "再见。\n<end_call/>"
+            EndingModelProtocol.fixture.fails = false
+        }
+
         let (interrupted, interruptedVoice) = await make()
         try await until { interruptedVoice.finished }
         let oldTurn = interruptedVoice.turn!
