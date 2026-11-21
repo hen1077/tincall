@@ -218,6 +218,32 @@ jobs:
           fi
           sudo xcode-select -s "$app/Contents/Developer"
           xcodebuild -version
+      - name: Stage verified ONNX archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/tincall-selfsign"
+          derived="$output/DerivedData"
+          mkdir -p "$output"
+
+          # Let SwiftPM clone the pinned package first. Its binary download may fail
+          # here because download.onnxruntime.ai currently presents a bad TLS chain.
+          xcodebuild -project ios/Tincall.xcodeproj -scheme Tincall             -resolvePackageDependencies -derivedDataPath "$derived" >/tmp/onnx-resolve.log 2>&1 || true
+
+          checkout="$derived/SourcePackages/checkouts/onnxruntime-swift-package-manager"
+          test -f "$checkout/Package.swift"
+
+          runtime="pod-archive-onnxruntime-c-1.24.2.zip"
+          extensions="pod-archive-onnxruntime-extensions-c-0.13.0.zip"
+
+          curl --fail --location --retry 4 --retry-all-errors --insecure             "https://download.onnxruntime.ai/$runtime" -o "$checkout/$runtime"
+          curl --fail --location --retry 4 --retry-all-errors --insecure             "https://download.onnxruntime.ai/$extensions" -o "$checkout/$extensions"
+
+          echo "f7100a992d2a8135168c8afd831e6a58b465349101982aa58b3e11d36e600b54  $checkout/$runtime" | shasum -a 256 -c -
+          echo "346522d1171d4c99cb0908fa8e4e9330a4a6aad39cd83ce36eb654437b33e6b5  $checkout/$extensions" | shasum -a 256 -c -
+
+          echo "ORT_POD_LOCAL_PATH=$runtime" >> "$GITHUB_ENV"
+          echo "ORT_EXTENSIONS_POD_LOCAL_PATH=$extensions" >> "$GITHUB_ENV"
       - name: Package unsigned IPA
         shell: bash
         run: |
