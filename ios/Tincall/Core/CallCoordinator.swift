@@ -61,6 +61,8 @@ final class CallCoordinator {
     @ObservationIgnored var modelEndTurn: VoiceTurnID?
     @ObservationIgnored var externalEndSession: VoiceSessionID?
     @ObservationIgnored var externalReplyQueue: [(turn: VoiceTurnID, replyID: UUID, inputID: UUID?)] = []
+    /// Per-message speech text for external bilingual replies. Display text stays in the call record.
+    @ObservationIgnored var externalSpokenTexts: [UUID: String] = [:]
     @ObservationIgnored var tasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored let summaryTasks: CallSummaryTasks
     @ObservationIgnored var pendingAudio: [UUID: [VoiceAudioSegment]] = [:]
@@ -249,6 +251,7 @@ final class CallCoordinator {
         stopActivityCheckpoints(session)
         RequestLogStore.shared.markHangUp(callID: session.callID)
         discardQueuedExternalReplies(reason: .hangUp)
+        externalSpokenTexts.removeAll()
         if canInterrupt, let turn = turns[session.callID] {
             cancelReply(turn, reason: .hangUp)
         } else {
