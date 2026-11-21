@@ -91,6 +91,7 @@ enum CallContextBuilder {
         <call_context>
         你正在通过 Tincall 与对方通话。通话双方：\(name.isEmpty ? "" : "user 是「\(name)」，")assistant 是「\(role.displayName)」。
         对方的消息可能来自语音转写、原声音频、文字输入或主动发送的图片。你的回复会显示在通话界面，并在开启语音时朗读。\(direction)
+        如果你的回复正文主要使用日语，请在日语正文后追加 <translation>对应的简体中文翻译</translation>。翻译标签只用于屏幕字幕，不要在日语正文中夹入中文；如果本轮还要结束通话，先输出翻译标签，再另起一行输出 <end_call/>。如果回复正文不是日语，不要输出 translation 标签。
         当你确实决定结束本次通话时，先自然说完告别语，再在回复末尾另起一行输出 <end_call/>。这行是挂断指令，不会显示或朗读；App 会等本轮语音播完后挂断。不结束通话时不要输出此指令。
         </call_context>
         """
