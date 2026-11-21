@@ -3,6 +3,26 @@
 
 import Foundation
 
+private struct ExternalBilingualReply {
+    let spoken: String
+    let display: String
+
+    /// Opt-in wire format for custom clients:
+    /// <spoken text><translation>display-only translation</translation>
+    /// Untagged replies remain completely unchanged.
+    static func parse(_ text: String) -> Self? {
+        let opening = "<translation>"
+        let closing = "</translation>"
+        guard let openingRange = text.range(of: opening),
+              let closingRange = text.range(of: closing, range: openingRange.upperBound..<text.endIndex),
+              text[closingRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let spoken = String(text[..<openingRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let translation = String(text[openingRange.upperBound..<closingRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !spoken.isEmpty, !translation.isEmpty else { return nil }
+        return Self(spoken: spoken, display: spoken + "\n" + translation)
+    }
+}
+
 extension CallCoordinator {
     func sendExternalInput(callID: UUID) {
         guard tasks[callID] == nil, let value = records[callID], let pending = value.externalPendingInput,
@@ -121,8 +141,11 @@ extension CallCoordinator {
             if event.type == "reply.started" { return }
             if event.type == "reply.completed", let replyID = event.payload.reply_id, var value = records[id] {
                 guard let text = event.payload.text else { throw TincallError(message: String(localized: "连接端完成事件缺少正文")) }
+                let cleaned = cleanExternalText(text)
+                let bilingual = ExternalBilingualReply.parse(cleaned)
                 let message = CallMessage(id: value.messages.contains { $0.id == replyID } ? UUID() : replyID,
-                                          turnID: UUID(), role: .assistant, text: cleanExternalText(text), status: .completed)
+                                          turnID: UUID(), role: .assistant, text: bilingual?.display ?? cleaned, status: .completed)
+                if let spoken = bilingual?.spoken { externalSpokenTexts[message.id] = spoken }
                 value.messages.append(message)
                 value.externalEpoch = max(value.externalEpoch ?? 0, event.epoch)
                 try save(value)
@@ -218,11 +241,28 @@ extension CallCoordinator {
             guard let raw = event.payload.text else { throw TincallError(message: String(localized: "连接端完成事件缺少正文")) }
             let text = cleanExternalText(raw)
             let received = records[id]?.messages.first(where: { $0.id == turn.messageID })?.text ?? ""
-            guard text.hasPrefix(received) else {
-                complete(turn, status: .failed, error: TincallError(message: String(localized: "连接端完成正文与已接收内容不同，已停止合成")))
-                return
+            if received.isEmpty, let bilingual = ExternalBilingualReply.parse(text) {
+                mutate(id) { value in
+                    if let index = value.messages.firstIndex(where: { $0.id == turn.messageID }) {
+                        value.messages[index].text = bilingual.display
+                    }
+                }
+                externalSpokenTexts[turn.messageID] = bilingual.spoken
+                if !textOnly, session == turn.session, phase == .active, playback != .failed {
+                    do { try voice.appendReply(bilingual.spoken, to: turn) }
+                    catch {
+                        playback = .failed
+                        errorMessage = safeMessage(error)
+                        voice.interruptReply(turn)
+                    }
+                }
+            } else {
+                guard text.hasPrefix(received) else {
+                    complete(turn, status: .failed, error: TincallError(message: String(localized: "连接端完成正文与已接收内容不同，已停止合成")))
+                    return
+                }
+                receiveDelta(String(text.dropFirst(received.count)), turn: turn)
             }
-            receiveDelta(String(text.dropFirst(received.count)), turn: turn)
             mutate(id) { $0.externalPendingInput = nil }
             complete(turn, status: .completed)
         case "reply.failed":
@@ -259,7 +299,7 @@ extension CallCoordinator {
             currentPlaybackCaption = nil
             do {
                 try voice.beginReply(next.turn)
-                try voice.appendReply(message.text, to: next.turn)
+                try voice.appendReply(externalSpokenTexts[next.turn.messageID] ?? message.text, to: next.turn)
                 try voice.finishReply(next.turn)
                 return true
             } catch {
