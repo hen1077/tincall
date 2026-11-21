@@ -199,3 +199,34 @@ jobs:
           name: build-log-app-store-xcode-27
           path: ${{ runner.temp }}/build.log
           retention-days: 7
+
+  package-self-sign:
+    name: Build unsigned self-sign IPA
+    runs-on: xcode-27
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode 27
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apps=(/Applications/Xcode_27*.app)
+          if (( ${#apps[@]} )); then
+            app="${apps[${#apps[@]}-1]}"
+          else
+            app=/Applications/Xcode.app
+          fi
+          sudo xcode-select -s "$app/Contents/Developer"
+          xcodebuild -version
+      - name: Package unsigned IPA
+        run: bash tools/package-self-sign.sh "$RUNNER_TEMP/tincall-selfsign"
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: tincall-bilingual-selfsign
+          path: |
+            ${{ runner.temp }}/tincall-selfsign/*-selfsign-unsigned.ipa
+            ${{ runner.temp }}/tincall-selfsign/*-library-materials.zip
+            ${{ runner.temp }}/tincall-selfsign/BUILD.txt
+          if-no-files-found: error
+          retention-days: 7
