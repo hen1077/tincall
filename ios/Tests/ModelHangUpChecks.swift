@@ -7,17 +7,16 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
     final class Fixture: @unchecked Sendable {
         let lock = NSLock()
         var text = "再见。\n<end_call/>"
-        var translationText = "呐，还没睡吗？"
+        var queuedTexts: [String] = []
         var fails = false
     }
     static let fixture = Fixture()
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "call-ending.invalid" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        let body = String(data: request.httpBody ?? Data(), encoding: .utf8) ?? ""
-        let isTranslation = body.contains("只输出中文翻译正文")
         let (text, fails) = Self.fixture.lock.withLock {
-            (isTranslation ? Self.fixture.translationText : Self.fixture.text, Self.fixture.fails)
+            let value = Self.fixture.queuedTexts.isEmpty ? Self.fixture.text : Self.fixture.queuedTexts.removeFirst()
+            return (value, Self.fixture.fails)
         }
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
             headerFields: ["Content-Type": "text/event-stream"])!, cacheStoragePolicy: .notAllowed)
@@ -105,8 +104,7 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
         print("PASS: streamed command stays out of text/speech; goodbye drains before normal hangup")
 
         EndingModelProtocol.fixture.lock.withLock {
-            EndingModelProtocol.fixture.text = "ねえ、まだ起きてる？"
-            EndingModelProtocol.fixture.translationText = "呐，还没睡吗？"
+            EndingModelProtocol.fixture.queuedTexts = ["ねえ、まだ起きてる？", "呐，还没睡吗？"]
             EndingModelProtocol.fixture.fails = false
         }
         var japaneseRole = role
@@ -128,6 +126,7 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
         print("PASS: standalone Japanese speech and Chinese subtitle use separate model passes")
 
         EndingModelProtocol.fixture.lock.withLock {
+            EndingModelProtocol.fixture.queuedTexts = []
             EndingModelProtocol.fixture.text = "再见。\n<end_call/>"
             EndingModelProtocol.fixture.fails = false
         }
