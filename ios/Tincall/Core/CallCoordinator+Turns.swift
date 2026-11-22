@@ -250,7 +250,6 @@ extension CallCoordinator {
 
     private func streamModelReply(_ turn: VoiceTurnID, context: CallContext, connection: ConnectionProfile, role: CallRole) {
         let session = turn.session
-        let wantsJapaneseSubtitles = CallContextBuilder.wantsJapaneseSubtitles(role: role, ttsConnection: ttsConnection)
         tasks[session.callID] = Task { [weak self, model] in
             do {
                 var timestampFilter = CallTimestampStreamFilter()
@@ -273,6 +272,9 @@ extension CallCoordinator {
                 }
 
                 let subtitleSource = spokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+                let wantsJapaneseSubtitles = subtitleSource.unicodeScalars.contains { scalar in
+                    (0x3040...0x309F).contains(scalar.value) || (0x30A0...0x30FF).contains(scalar.value)
+                }
                 if wantsJapaneseSubtitles, !subtitleSource.isEmpty {
                     self?.externalSpokenTexts[turn.messageID] = subtitleSource
                 }
