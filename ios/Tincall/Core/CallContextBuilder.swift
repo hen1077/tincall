@@ -25,16 +25,6 @@ enum CallContextBuilder {
         "[\(timeFormatter(timeZone: timeZone).string(from: createdAt))]\n\(text)"
     }
 
-    static func wantsJapaneseSubtitles(role: CallRole, ttsConnection: ConnectionProfile?) -> Bool {
-        let persona = role.effectivePersonaEnabled ? role.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines) : ""
-        let expression = ttsConnection?.effectiveExpressionPrompt.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return [persona, expression].contains { text in
-            text.localizedCaseInsensitiveContains("日语") ||
-            text.localizedCaseInsensitiveContains("日本語") ||
-            text.localizedCaseInsensitiveContains("Japanese")
-        }
-    }
-
     private static func timeFormatter(timeZone: TimeZone = .autoupdatingCurrent) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
