@@ -7,13 +7,18 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
     final class Fixture: @unchecked Sendable {
         let lock = NSLock()
         var text = "再见。\n<end_call/>"
+        var translationText = "呐，还没睡吗？"
         var fails = false
     }
     static let fixture = Fixture()
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "call-ending.invalid" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        let (text, fails) = Self.fixture.lock.withLock { (Self.fixture.text, Self.fixture.fails) }
+        let body = String(data: request.httpBody ?? Data(), encoding: .utf8) ?? ""
+        let isTranslation = body.contains("只输出中文翻译正文")
+        let (text, fails) = Self.fixture.lock.withLock {
+            (isTranslation ? Self.fixture.translationText : Self.fixture.text, Self.fixture.fails)
+        }
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
             headerFields: ["Content-Type": "text/event-stream"])!, cacheStoragePolicy: .notAllowed)
         for character in text {
@@ -77,14 +82,14 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
         for connection in [model, tts] { try credentials.write("synthetic-test-key", connectionID: connection.id) }
         defer { for connection in [model, tts] { try? credentials.delete(connectionID: connection.id) } }
         let role = CallRole(name: "Synthetic", modelConnectionID: model.id, sttConnectionID: stt.id, ttsConnectionID: tts.id)
-        func make(textOnly: Bool = false, silentPlayback: Bool = false) async -> (CallCoordinator, EndingVoice) {
+        func make(textOnly: Bool = false, silentPlayback: Bool = false, callRole: CallRole? = nil) async -> (CallCoordinator, EndingVoice) {
             let voice = EndingVoice()
             voice.emitsPlayback = !silentPlayback
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = [EndingModelProtocol.self]
             let coordinator = CallCoordinator(voice: voice, model: ChatCompletionClient(credentials: credentials, configuration: configuration))
             coordinator.onSaveRecord = { _ in }
-            await coordinator.start(role: role, connections: [model, stt, tts], retention: AudioRetention(), textOnly: textOnly)
+            await coordinator.start(role: callRole ?? role, connections: [model, stt, tts], retention: AudioRetention(), textOnly: textOnly)
             precondition(coordinator.isCallActive, coordinator.errorMessage ?? "Synthetic call failed to start")
             precondition(coordinator.sendText("Synthetic input"))
             return (coordinator, voice)
@@ -100,19 +105,27 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
         print("PASS: streamed command stays out of text/speech; goodbye drains before normal hangup")
 
         EndingModelProtocol.fixture.lock.withLock {
-            EndingModelProtocol.fixture.text = "ねえ、まだ起きてる？<translation>呐，还没睡吗？</translation>"
+            EndingModelProtocol.fixture.text = "ねえ、まだ起きてる？"
+            EndingModelProtocol.fixture.translationText = "呐，还没睡吗？"
             EndingModelProtocol.fixture.fails = false
         }
-        let (bilingual, bilingualVoice) = await make()
-        try await until { bilingualVoice.finished || bilingual.generation == .failed }
-        precondition(bilingual.generation == .completed)
+        var japaneseRole = role
+        japaneseRole.systemPrompt = "日本語で自然に話してください。"
+        let (bilingual, bilingualVoice) = await make(callRole: japaneseRole)
+        try await until {
+            bilingual.generation == .failed ||
+            bilingual.record?.messages.last?.text.contains("呐，还没睡吗？") == true
+        }
+        precondition(bilingual.generation == .completed && bilingualVoice.finished)
         precondition(bilingualVoice.text == "ねえ、まだ起きてる？",
                      "translation leaked into speech: \(bilingualVoice.text)")
-        precondition(bilingual.record?.messages.last?.text == "ねえ、まだ起きてる？\n呐，还没睡吗？")
+        let storedBilingual = bilingual.record?.messages.last?.text.replacingOccurrences(of: "\u{2063}", with: "")
+        precondition(storedBilingual == "ねえ、まだ起きてる？\n呐，还没睡吗？")
         bilingualVoice.onEvent?(.playbackCaption(bilingualVoice.turn!, "ねえ、まだ起きてる？"))
-        precondition(bilingual.currentPlaybackCaption == "ねえ、まだ起きてる？\n呐，还没睡吗？")
+        let displayedBilingual = bilingual.currentPlaybackCaption?.replacingOccurrences(of: "\u{2063}", with: "")
+        precondition(displayedBilingual == "ねえ、まだ起きてる？\n呐，还没睡吗？")
         bilingual.hangUp()
-        print("PASS: standalone Japanese reply speaks only Japanese and displays Chinese translation")
+        print("PASS: standalone Japanese speech and Chinese subtitle use separate model passes")
 
         EndingModelProtocol.fixture.lock.withLock {
             EndingModelProtocol.fixture.text = "再见。\n<end_call/>"
