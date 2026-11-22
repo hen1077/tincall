@@ -107,9 +107,7 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
             EndingModelProtocol.fixture.queuedTexts = ["ねえ、まだ起きてる？", "呐，还没睡吗？"]
             EndingModelProtocol.fixture.fails = false
         }
-        var japaneseRole = role
-        japaneseRole.systemPrompt = "日本語で自然に話してください。"
-        let (bilingual, bilingualVoice) = await make(callRole: japaneseRole)
+        let (bilingual, bilingualVoice) = await make()
         try await until {
             bilingual.generation == .failed ||
             bilingual.record?.messages.last?.text.contains("呐，还没睡吗？") == true
@@ -123,7 +121,7 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
         let displayedBilingual = bilingual.currentPlaybackCaption?.replacingOccurrences(of: "\u{2063}", with: "")
         precondition(displayedBilingual == "ねえ、まだ起きてる？\n呐，还没睡吗？")
         bilingual.hangUp()
-        print("PASS: standalone Japanese speech and Chinese subtitle use separate model passes")
+        print("PASS: actual Japanese output triggers a separate Chinese subtitle pass")
 
         EndingModelProtocol.fixture.lock.withLock {
             EndingModelProtocol.fixture.queuedTexts = []
