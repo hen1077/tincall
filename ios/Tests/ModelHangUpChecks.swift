@@ -7,13 +7,17 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
     final class Fixture: @unchecked Sendable {
         let lock = NSLock()
         var text = "再见。\n<end_call/>"
+        var queuedTexts: [String] = []
         var fails = false
     }
     static let fixture = Fixture()
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "call-ending.invalid" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        let (text, fails) = Self.fixture.lock.withLock { (Self.fixture.text, Self.fixture.fails) }
+        let (text, fails) = Self.fixture.lock.withLock {
+            let value = Self.fixture.queuedTexts.isEmpty ? Self.fixture.text : Self.fixture.queuedTexts.removeFirst()
+            return (value, Self.fixture.fails)
+        }
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
             headerFields: ["Content-Type": "text/event-stream"])!, cacheStoragePolicy: .notAllowed)
         for character in text {
@@ -77,14 +81,14 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
         for connection in [model, tts] { try credentials.write("synthetic-test-key", connectionID: connection.id) }
         defer { for connection in [model, tts] { try? credentials.delete(connectionID: connection.id) } }
         let role = CallRole(name: "Synthetic", modelConnectionID: model.id, sttConnectionID: stt.id, ttsConnectionID: tts.id)
-        func make(textOnly: Bool = false, silentPlayback: Bool = false) async -> (CallCoordinator, EndingVoice) {
+        func make(textOnly: Bool = false, silentPlayback: Bool = false, callRole: CallRole? = nil) async -> (CallCoordinator, EndingVoice) {
             let voice = EndingVoice()
             voice.emitsPlayback = !silentPlayback
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = [EndingModelProtocol.self]
             let coordinator = CallCoordinator(voice: voice, model: ChatCompletionClient(credentials: credentials, configuration: configuration))
             coordinator.onSaveRecord = { _ in }
-            await coordinator.start(role: role, connections: [model, stt, tts], retention: AudioRetention(), textOnly: textOnly)
+            await coordinator.start(role: callRole ?? role, connections: [model, stt, tts], retention: AudioRetention(), textOnly: textOnly)
             precondition(coordinator.isCallActive, coordinator.errorMessage ?? "Synthetic call failed to start")
             precondition(coordinator.sendText("Synthetic input"))
             return (coordinator, voice)
@@ -98,6 +102,32 @@ private final class EndingModelProtocol: URLProtocol, @unchecked Sendable {
         precondition(!call.isCallActive && voice.stopped && call.record?.endedAt != nil && call.endedByRemote)
         precondition(call.record?.messages.last?.status == .completed && call.record?.messages.last?.interruption == nil)
         print("PASS: streamed command stays out of text/speech; goodbye drains before normal hangup")
+
+        EndingModelProtocol.fixture.lock.withLock {
+            EndingModelProtocol.fixture.queuedTexts = ["ねえ、まだ起きてる？", "呐，还没睡吗？"]
+            EndingModelProtocol.fixture.fails = false
+        }
+        let (bilingual, bilingualVoice) = await make()
+        try await until {
+            bilingual.generation == .failed ||
+            bilingual.record?.messages.last?.text.contains("呐，还没睡吗？") == true
+        }
+        precondition(bilingual.generation == .completed && bilingualVoice.finished)
+        precondition(bilingualVoice.text == "ねえ、まだ起きてる？",
+                     "translation leaked into speech: \(bilingualVoice.text)")
+        let storedBilingual = bilingual.record?.messages.last?.text.replacingOccurrences(of: "\u{2063}", with: "")
+        precondition(storedBilingual == "ねえ、まだ起きてる？\n呐，还没睡吗？")
+        bilingualVoice.onEvent?(.playbackCaption(bilingualVoice.turn!, "ねえ、まだ起きてる？"))
+        let displayedBilingual = bilingual.currentPlaybackCaption?.replacingOccurrences(of: "\u{2063}", with: "")
+        precondition(displayedBilingual == "ねえ、まだ起きてる？\n呐，还没睡吗？")
+        bilingual.hangUp()
+        print("PASS: actual Japanese output triggers a separate Chinese subtitle pass")
+
+        EndingModelProtocol.fixture.lock.withLock {
+            EndingModelProtocol.fixture.queuedTexts = []
+            EndingModelProtocol.fixture.text = "再见。\n<end_call/>"
+            EndingModelProtocol.fixture.fails = false
+        }
 
         let (interrupted, interruptedVoice) = await make()
         try await until { interruptedVoice.finished }

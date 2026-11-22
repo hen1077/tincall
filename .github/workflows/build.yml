@@ -199,3 +199,75 @@ jobs:
           name: build-log-app-store-xcode-27
           path: ${{ runner.temp }}/build.log
           retention-days: 7
+
+  package-self-sign:
+    name: Build unsigned self-sign IPA
+    runs-on: xcode-27
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode 27
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apps=(/Applications/Xcode_27*.app)
+          if (( ${#apps[@]} )); then
+            app="${apps[${#apps[@]}-1]}"
+          else
+            app=/Applications/Xcode.app
+          fi
+          sudo xcode-select -s "$app/Contents/Developer"
+          xcodebuild -version
+      - name: Seed verified ONNX archives into SwiftPM cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          mirror="https://github.com/TypeWhisper/onnxruntime-swift-package-manager/releases/download/1.24.2"
+          cache="$HOME/Library/Caches/org.swift.swiftpm/artifacts"
+          mkdir -p "$cache"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+
+          seed() {
+            original_url="$1"
+            mirror_url="$2"
+            checksum="$3"
+            name="${original_url##*/}"
+            target="$cache/$(printf '%s' "$original_url" | LC_ALL=C sed 's/[^A-Za-z0-9]/_/g')"
+
+            curl -fsSL --retry 4 --retry-all-errors --connect-timeout 20 --max-time 300 \
+              "$mirror_url" -o "$work/$name"
+            echo "$checksum  $work/$name" | shasum -a 256 -c -
+            mv "$work/$name" "$target"
+          }
+
+          seed \
+            "https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.24.2.zip" \
+            "$mirror/pod-archive-onnxruntime-c-1.24.2.zip" \
+            "f7100a992d2a8135168c8afd831e6a58b465349101982aa58b3e11d36e600b54"
+
+          seed \
+            "https://download.onnxruntime.ai/pod-archive-onnxruntime-extensions-c-0.13.0.zip" \
+            "$mirror/pod-archive-onnxruntime-extensions-c-0.13.0.zip" \
+            "346522d1171d4c99cb0908fa8e4e9330a4a6aad39cd83ce36eb654437b33e6b5"
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          if bash tools/package-self-sign.sh "$RUNNER_TEMP/tincall-selfsign"; then
+            exit 0
+          fi
+          echo "=== package errors ==="
+          awk '/error:/ && !seen[$0]++ { if (count++ < 80) print }' "$RUNNER_TEMP/tincall-selfsign/build.log" || true
+          echo "=== package log tail ==="
+          tail -40 "$RUNNER_TEMP/tincall-selfsign/build.log" || true
+          exit 1
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: tincall-bilingual-selfsign
+          path: |
+            ${{ runner.temp }}/tincall-selfsign/*-selfsign-unsigned.ipa
+            ${{ runner.temp }}/tincall-selfsign/*-library-materials.zip
+            ${{ runner.temp }}/tincall-selfsign/BUILD.txt
+          if-no-files-found: error
+          retention-days: 7

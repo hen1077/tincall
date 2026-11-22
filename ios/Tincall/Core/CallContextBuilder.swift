@@ -59,7 +59,10 @@ enum CallContextBuilder {
         let timeAware = role.timeAwarenessEnabled == true
         let formatter = timeFormatter()
         func content(for message: CallMessage) -> String {
-            let text = message.id == audioInput?.messageID ? "" : message.recordedText
+            var text = message.id == audioInput?.messageID ? "" : message.recordedText
+            if message.role == .assistant, let marker = text.range(of: "\n\u{2063}") {
+                text = String(text[..<marker.lowerBound])
+            }
             guard timeAware else { return text }
             if message.role == .user {
                 return "[\(formatter.string(from: message.createdAt))]\n\(text)"

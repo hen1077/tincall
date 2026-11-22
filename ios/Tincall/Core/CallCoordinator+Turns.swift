@@ -255,19 +255,63 @@ extension CallCoordinator {
                 var timestampFilter = CallTimestampStreamFilter()
                 var endFilter = CallEndStreamFilter()
                 let timeAware = role.timeAwarenessEnabled == true
+                var spokenText = ""
                 _ = try await model.stream(connection: connection, messages: context.messages, logContext: RequestLogStore.shared.context(for: turn),
                                            omittedTurnCount: context.omittedTurnCount) { delta in
                     let cleaned = endFilter.append(delta)
                     let text = timeAware ? timestampFilter.append(cleaned) : cleaned
+                    spokenText += text
                     if !text.isEmpty { self?.receiveDelta(text, turn: turn) }
                 }
                 let endTail = endFilter.append("", final: true)
                 let tail = timeAware ? timestampFilter.append(endTail, final: true) : endTail
+                spokenText += tail
                 if !tail.isEmpty { self?.receiveDelta(tail, turn: turn) }
                 if endFilter.requestsEnd, self?.turns[session.callID] == turn {
                     self?.modelEndTurn = turn
                 }
+
+                let subtitleSource = spokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+                let wantsJapaneseSubtitles = subtitleSource.unicodeScalars.contains { scalar in
+                    (0x3040...0x309F).contains(scalar.value) || (0x30A0...0x30FF).contains(scalar.value)
+                }
+                if wantsJapaneseSubtitles, !subtitleSource.isEmpty {
+                    self?.externalSpokenTexts[turn.messageID] = subtitleSource
+                }
                 self?.complete(turn, status: .completed)
+
+                guard wantsJapaneseSubtitles, !subtitleSource.isEmpty else { return }
+                do {
+                    var translation = ""
+                    _ = try await model.stream(
+                        connection: connection,
+                        messages: [
+                            ModelMessage(role: "system", content: "把下面的日语通话回复翻译成自然的简体中文。只输出中文翻译正文，不要解释，不要加标签、引号或日语原文。"),
+                            ModelMessage(role: "user", content: subtitleSource)
+                        ],
+                        logContext: RequestLogStore.shared.context(for: turn)
+                    ) { delta in
+                        translation += delta
+                    }
+                    let chinese = translation.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !chinese.isEmpty, self?.turns[session.callID] == turn else { return }
+                    let display = subtitleSource + "\n\u{2063}" + chinese
+                    self?.mutate(session.callID) { value in
+                        if let index = value.messages.firstIndex(where: { $0.id == turn.messageID }) {
+                            value.messages[index].text = display
+                        }
+                    }
+                    self?.persist(session.callID)
+                    if self?.session == turn.session,
+                       self?.phase == .active,
+                       self?.playback == .playing || self?.playback == .synthesizing {
+                        self?.currentPlaybackCaption = display
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    // Subtitle translation is optional; never fail or replay the spoken reply because it failed.
+                }
             } catch {
                 if Task.isCancelled { return }
                 self?.complete(turn, status: .failed, error: error)

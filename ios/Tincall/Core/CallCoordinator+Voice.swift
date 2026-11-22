@@ -236,7 +236,12 @@ extension CallCoordinator {
             }
         case let .playbackCaption(turn, caption):
             guard session == turn.session, turns[turn.session.callID] == turn, phase == .active else { return }
-            currentPlaybackCaption = caption
+            if externalSpokenTexts[turn.messageID] != nil,
+               let display = records[turn.session.callID]?.messages.first(where: { $0.id == turn.messageID })?.text {
+                currentPlaybackCaption = display
+            } else {
+                currentPlaybackCaption = caption
+            }
         case let .speechInterruptionAvailability(identity, availability):
             guard session == identity else { return }
             speechInterruptionAvailability = availability
